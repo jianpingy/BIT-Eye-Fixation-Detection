@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import math
 import random
+from scipy.stats import chi2
 import matplotlib.pyplot as plt
 import warnings
 
@@ -23,7 +24,7 @@ chimed=torch.tensor([0.454937,1.38629,2.36597,3.35670,4.35146,
        33.34,34.34,35.34,36.34,37.34,38.34,39.34,40.34,41.34,42.34,
        43.34,44.34,45.34,46.34,47.33,48.33,49.33])
 
-def BIT(T,XL,YL,XR,YR,alpha=0.25,x_min=0,x_max=1281,y_min=0,y_max=769):
+def BIT(T,XL,YL,XR,YR,alpha=0.25,x_min=0,x_max=1281,y_min=0,y_max=769,debug=False):
     print('Preprocessing...')
     Duration,Velocity,T,Z = Preprocessing(T,XL,YL,XR,YR,x_min,x_max,y_min,y_max)
     print(' ')
@@ -37,25 +38,36 @@ def BIT(T,XL,YL,XR,YR,alpha=0.25,x_min=0,x_max=1281,y_min=0,y_max=769):
     data = torch.transpose(Velocity,0,1)
     p = 4
     h = math.ceil(n*(1-alpha))
-    Avg,Cov,H,m,ind = FastMCD(data,p,h,n)
-    print(' ')
     
-    print('Plot velocities selected by FastMCD...')
-    plot_fixations(Velocity,H)
-    print(' ')
-    print('Plot x and y-coordinates against time...')
-    plot_x_with_time(Z,T,H,ind,figsize=(20,8))
-    print(' ')
-    print('Plot left eye velocities with approximated control threshold derived by FastMCD...')
-    plot_scatter(Avg[0:2],Cov[0:2,0:2],data[0:2],H[0:2],m) ##Left
-    print(' ')
-    print('Plot right eye velocities with approximated control threshold derived by FastMCD...')
-    plot_scatter(Avg[2:],Cov[2:,2:],data[2:],H[2:],m) ##Right
-    print(' ')
+    if not debug:
+        Avg,Cov,H,m,ind = FastMCD(data,p,h,n)
+        print('Average is: ', Avg)
+        print('Cov is: ', Cov)
+        print(' ')
+
+        print('Plot velocities selected by FastMCD...')
+        plot_fixations(Velocity,H)
+        print(' ')
+        print('Plot x and y-coordinates against time...')
+        plot_x_with_time(Z,T,H,ind,figsize=(20,8))
+        print(' ')
+        print('Plot left eye velocities with approximated control threshold derived by FastMCD...')
+        plot_scatter(Avg[0:2],Cov[0:2,0:2],data[0:2],H[0:2],m) ##Left
+        print(' ')
+        print('Plot right eye velocities with approximated control threshold derived by FastMCD...')
+        plot_scatter(Avg[2:],Cov[2:,2:],data[2:],H[2:],m) ##Right
+        print(' ')
+
+        print('Now return the times of fixations, saccades and blinks respectively...')
     
-    print('Now return the times of fixations, saccades and blinks respectively...')
+    else:
+        Avg = torch.tensor([[1.1169],[-0.5141],[2.1401],[0.5282]])
+        Cov = torch.tensor([[656.819125315921, 57.2027917384622, 136.014603387873, 33.5342512532665],
+                            [57.2027917384622, 495.885870352426, 10.9513488394473, 48.5913157204606],
+                            [136.014603387873, 10.9513488394473, 665.417411479134, -53.8408086285474],
+                            [33.5342512532665, 48.5913157204606, -53.8408086285474, 444.030249062926]])
     
-    return (T,Fixation_Saccade_Blink(np.sqrt(0.001),Z,data,Avg,Cov,n))
+    return (T,Z,Fixation_Saccade_Blink(np.sqrt(0.001),Z,data,Avg,Cov,n))
 
 def Preprocessing(T,XL,YL,XR,YR,x_min,x_max,y_min,y_max):
     Z = [XL,YL,XR,YR]
@@ -88,21 +100,28 @@ def Preprocessing(T,XL,YL,XR,YR,x_min,x_max,y_min,y_max):
     Duration = Time[1:]-Time[0:-1]
     return (Duration,Velocity,Time,Z)
 
-def chi_to_dist_threshold(chi,Cov):
-    return torch.sqrt(2*torch.log(chi*torch.sqrt(torch.det(2*torch.pi*Cov)))).item()
-
-def multivariate_control(chi,X_data,mean,Cov,Cov_inv,n): #n is the total number of observations
-    threshold = chi_to_dist_threshold(chi,Cov)
-    d = dist(X_data,mean,Cov_inv,n)
-    return (d <= threshold, d > threshold)
+def multivariate_control(chi,X_data,mean,Cov,Cov_inv,n): #n is the total number of velocities
+    d_both = dist(X_data,mean,Cov_inv,n)
+    chi2_sq_0_both = chi2.cdf(d_both**2, 4, loc=0, scale=1)
+    d_left = dist(X_data[[0,2]],mean[[0,2]],Cov_inv[[[0,0],[2,2]],[[0,2],[0,2]]],n)
+    chi2_sq_0_left = chi2.cdf(d_left**2, 2, loc=0, scale=1)
+    d_right = dist(X_data[[1,2]],mean[[1,2]],Cov_inv[[[1,1],[3,3]],[[1,3],[1,3]]],n)
+    chi2_sq_0_right = chi2.cdf(d_right**2, 2, loc=0, scale=1)
+    ind_tot = torch.zeros(n)
+    ind_tot = chi2_sq_0_left < 1-chi
+    ind_tot = chi2_sq_0_right < 1-chi
+    ind_tot = chi2_sq_0_both < 1-chi
+    ind_fix = ind_tot==1
+    ind_unsure = ind_tot==0
+    return (ind_fix, ind_unsure)
 
 def Fixation_Saccade_Blink(chi,Z,X_data,Avg,Cov,n):
     (ind_fix,ind_unsure) = multivariate_control(chi,X_data,Avg,Cov,torch.linalg.inv(Cov),n)
     indx_all = torch.arange(n)
     indx_fix = (indx_all[ind_fix]+1).tolist()
     indx_unsure = indx_all[ind_unsure]+1
-    flag = False
-    if indx_unsure[-1] == n+1:
+    flag = False #Last entry
+    if indx_unsure[-1] == n:
         flag = True
         indx_unsure = indx_unsure[:-1]
     delta2 = Z[indx_unsure+1]-Z[indx_unsure-1]
@@ -112,6 +131,41 @@ def Fixation_Saccade_Blink(chi,Z,X_data,Avg,Cov,n):
     if flag:
         indx_blink.append(n+1)
     return (indx_fix,indx_sac,indx_blink)
+
+def Fixation_Classification(n, indx_fix, indx_sac, indx_blink):
+    ind_fix_tot = indx_fix+indx_blink
+    ind_fix_tot.sort()
+
+    ind_fix_tensor = torch.tensor(ind_fix_tot)
+    ind_fix_prev = ind_fix_tensor[:-1]
+    ind_fix_aft = ind_fix_tensor[1:]
+    diff = ind_fix_aft-ind_fix_prev
+
+    size = len(diff)
+    T_fix = []
+    curr_group = []
+    count = 0
+    flag_end = False
+    last_included = False
+
+    for i in range(size):
+        if diff[i] == 1:
+            curr_group.append(i)
+            if i != size - 1:
+                if diff[i+1] != 1:
+                    curr_group.append(i+1)
+                    T_fix.append(curr_group)
+                    curr_group = []
+            else:
+                curr_group.append(i+1)
+                T_fix.append(curr_group)
+            
+    ind_fix_tot = np.array(ind_fix_tot)
+    indexes = torch.zeros(n)
+    for i in range(len(T_fix)):
+        temp = list(ind_fix_tot[T_fix[i]])
+        indexes[[temp[0]-1]+temp]=i+1
+    return (indexes, len(T_fix))
 
 def plot_velocity(Velocity):
     fig,ax = plt.subplots(1,2)
@@ -147,6 +201,7 @@ def plot_x_with_time(Z,Time,selected_datapoints,ind,figsize=(15,7)):
     ax[1].set(ylabel='y-coordinate (pixels)')
     ax[1].legend()
 
+#####FastMCD
 def dist(X,T,S_inv,n): ##Mahalanobis distance
     return torch.sqrt(torch.diag(torch.transpose(X-T.repeat(1,n),0,1)@S_inv@(X-T.repeat(1,n))))
 
@@ -312,7 +367,7 @@ def FastMCD(data,p,h,n):
         detmt_merged = [detmt_merged[indx[k]] for k in range(best_num)]
         return FastMCD_find_best(H_merged,detmt_merged,data,p,h,n)
 
-def Final_One_Step_Update(T_MCD,S_MCD,data,n):
+def Final_One_Step_Update(T_MCD,S_MCD,data,n,p):
     d = dist(data,T_MCD,torch.linalg.inv(S_MCD),n)
     weights = d <= torch.sqrt(chi2q[p-1]).item()
     sum_w = torch.sum(weights)
