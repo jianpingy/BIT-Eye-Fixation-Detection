@@ -7,6 +7,8 @@ from scipy.stats import chi2
 import matplotlib.pyplot as plt
 import warnings
 
+#This is a test for git requests (pull and push)
+
 #The 0.975 quantile of the chi-squared distribution.
 chi2q=torch.tensor([5.02389,7.37776,9.34840,11.1433,12.8325,14.4494,
        16.0128,17.5346,19.0228,20.4831,21.920,23.337,
